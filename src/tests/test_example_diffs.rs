@@ -11,6 +11,20 @@ mod tests {
     use insta::assert_snapshot;
 
     #[test]
+    fn test_long_context_line_with_invalid_utf8_and_escape_sequence() {
+        // Without and with the style reset that ends the line in colored git output.
+        for line_end in ["\x1b[K\n".as_bytes(), "\x1b[K\x1b[m\n".as_bytes()] {
+            let mut input = b"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n ".to_vec();
+            input.extend([0xa4; 500]);
+            input.extend(line_end);
+
+            let config = integration_test_utils::make_config_from_args(&[]);
+            let output = integration_test_utils::run_delta_bytes(&input, &config);
+            assert!(strip_ansi_codes(&output).contains("\u{fffd}"));
+        }
+    }
+
+    #[test]
     fn test_added_file() {
         DeltaTest::with_args(&[])
             .with_input(ADDED_FILE_INPUT)

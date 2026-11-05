@@ -300,14 +300,14 @@ impl DeltaTestOutput {
 }
 
 pub fn run_delta(input: &str, config: &config::Config) -> String {
+    run_delta_bytes(input.as_bytes(), config)
+}
+
+/// Like `run_delta`, for input that is not valid UTF-8.
+pub fn run_delta_bytes(input: &[u8], config: &config::Config) -> String {
     let mut writer: Vec<u8> = Vec::new();
 
-    delta(
-        ByteLines::new(BufReader::new(input.as_bytes())),
-        &mut writer,
-        config,
-    )
-    .unwrap();
+    delta(ByteLines::new(BufReader::new(input)), &mut writer, config).unwrap();
     String::from_utf8(writer).unwrap()
 }
 

@@ -46,7 +46,7 @@ fn truncate_str_impl<'a>(
     };
     let mut used = measure_text_width(&result_tail);
     let mut result = String::new();
-    for (t, is_ansi) in items {
+    'items: for (t, is_ansi) in items {
         if !is_ansi {
             for g in t.graphemes(true) {
                 let width_of_grapheme = g.width();
@@ -65,8 +65,13 @@ fn truncate_str_impl<'a>(
                                 result.push(fillchar);
                             }
                         }
+                        // Keep going: ANSI escape sequences after the cut, such as a style reset,
+                        // still belong in the result.
+                        break;
                     }
-                    break;
+                    // Without a fill character the result must be a prefix of `s`, so nothing
+                    // after the cut can be kept.
+                    break 'items;
                 }
                 result.push_str(g);
                 used += width_of_grapheme;
@@ -100,7 +105,7 @@ pub fn truncate_str<'a>(s: &'a str, display_width: usize, tail: &str) -> Cow<'a,
 /// Truncate string `s` so it fits into `display_width`, ignoring any ANSI escape sequences when
 /// calculating the width. If a double-width ("fullwidth") grapheme has to be cut, it is omitted and
 /// the resulting string is *shorter* than `display_width`. But this way the result is always a
-/// prefix of the input `s`.
+/// prefix of the input `s`, which also means that ANSI escape sequences after the cut are dropped.
 pub fn truncate_str_short(s: &str, display_width: usize) -> Cow<'_, str> {
     truncate_str_impl(s, display_width, "", None)
 }
@@ -397,6 +402,17 @@ mod tests {
         assert_eq!(truncate_str("123", 2, "s"), "1s");
         assert_eq!(truncate_str("123", 2, "→"), "1→");
         assert_eq!(truncate_str("12ݶ", 1, "ݶ"), "ݶ");
+    }
+
+    #[test]
+    fn test_truncate_str_short_is_prefix_with_ansi_after_cut() {
+        let s = "aa€\x1b[K\n";
+        assert_eq!(truncate_str_short(s, 2), "aa");
+
+        // `truncate_str` keeps a style reset that comes after the cut.
+        let styled = "\x1b[31maaa\x1b[0m";
+        assert_eq!(truncate_str(styled, 2, ""), "\x1b[31maa\x1b[0m");
+        assert_eq!(truncate_str_short(styled, 2), "\x1b[31maa");
     }
 
     #[test]
