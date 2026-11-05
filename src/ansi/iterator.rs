@@ -30,8 +30,11 @@ struct Performer {
     // This is never Element::Text.
     element: Option<Element>,
 
-    // Number of text bytes seen since the last element was emitted.
-    text_length: usize,
+    // Number of bytes of the printable character that was just completed.
+    printed_length: usize,
+
+    // Number of control bytes just seen. These are only text outside of an ANSI sequence.
+    executed_length: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -74,8 +77,19 @@ impl<'a> AnsiElementIterator<'a> {
         let mut performer = Performer::default();
         self.machine.advance(&mut performer, byte);
         self.element = performer.element;
-        self.text_length += performer.text_length;
+
+        // `Element::Text` ranges are derived from `text_length`, so it may only count bytes that
+        // directly follow the text so far.
+        let follows_text = self.start + self.text_length == self.pos;
         self.pos += 1;
+        if performer.printed_length > 0 {
+            // A character can only be printed outside of an ANSI sequence. If it does not follow
+            // the text, then bytes were discarded without producing an element, for example by a
+            // sequence that was cancelled. Those bytes become part of the text.
+            self.text_length = self.pos - self.start;
+        } else if performer.executed_length > 0 && follows_text {
+            self.text_length += performer.executed_length;
+        }
     }
 }
 
@@ -123,6 +137,7 @@ impl Iterator for AnsiElementIterator<'_> {
 impl anstyle_parse::Perform for Performer {
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], ignore: bool, byte: u8) {
         if ignore || intermediates.len() > 1 {
+            self.element = Some(Element::Csi(0, 0));
             return;
         }
 
@@ -144,13 +159,13 @@ impl anstyle_parse::Perform for Performer {
     }
 
     fn print(&mut self, c: char) {
-        self.text_length += c.len_utf8();
+        self.printed_length = c.len_utf8();
     }
 
     fn execute(&mut self, byte: u8) {
         // E.g. '\n'
         if byte < 128 {
-            self.text_length += 1;
+            self.executed_length = 1;
         }
     }
 
@@ -418,6 +433,48 @@ mod tests {
             ]
         );
         assert_eq!("バー", &s[5..11]);
+    }
+
+    #[test]
+    fn test_iterator_control_bytes_inside_escape_sequence() {
+        let s = "a\x1b€\x01\x01b";
+        let actual_elements: Vec<Element> = AnsiElementIterator::new(s).collect();
+        assert_eq!(
+            actual_elements,
+            vec![Element::Text(0, 1), Element::Esc(1, 8)]
+        );
+    }
+
+    #[test]
+    fn test_iterator_elements_are_contiguous_and_on_char_boundaries() {
+        const PIECES: &[&str] = &[
+            "\x1b", "[", "]", "P", "?", "!", "m", "\\", "a", "\n", "\x01", "\x07", "\x18", "€",
+            "\u{fffd}", "\u{9c}", "ל",
+        ];
+        const MAX_PIECES: u32 = 5;
+
+        let n = PIECES.len();
+        for count in 0..n.pow(MAX_PIECES) {
+            let mut remaining = count;
+            let mut s = String::new();
+            for _ in 0..MAX_PIECES {
+                s.push_str(PIECES[remaining % n]);
+                remaining /= n;
+            }
+
+            let mut end = 0;
+            for element in AnsiElementIterator::new(&s) {
+                let (Element::Sgr(_, i, j)
+                | Element::Csi(i, j)
+                | Element::Esc(i, j)
+                | Element::Osc(i, j)
+                | Element::Text(i, j)) = element;
+                assert_eq!(i, end, "gap before {i}..{j} in {s:?}");
+                assert!(i < j, "empty range {}..{} in {:?}", i, j, s);
+                assert!(s.is_char_boundary(j), "{} inside a char in {:?}", j, s);
+                end = j;
+            }
+        }
     }
 
     #[test]
